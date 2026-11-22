@@ -1,3 +1,5 @@
+//go:build windows
+
 package app_test
 
 import (
@@ -62,6 +64,9 @@ func TestNewRejectsInvalidProjectConfiguration(t *testing.T) {
 		{"unknown section", "model: {}\nagent: {}\n", "field agent not found"},
 		{"unknown model field", "model:\n  nam: typo\n", "field nam not found"},
 		{"wrong model type", "model: invalid\n", "cannot unmarshal"},
+		{"unknown sandbox mode", "model: {}\nsandbox_mode: invalid\n", "invalid sandbox_mode"},
+		{"empty sandbox mode", "model: {}\nsandbox_mode: ''\n", "invalid sandbox_mode"},
+		{"null sandbox mode", "model: {}\nsandbox_mode: null\n", "sandbox_mode must be a string"},
 		{"extra document", "model: {}\n---\nmodel: {}\n", "expected a single YAML document"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

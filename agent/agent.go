@@ -100,7 +100,20 @@ func (a *Agent) Run(ctx context.Context, task string) (Result, error) {
 		a.mu.Unlock()
 	}()
 
-	err := a.run(ctx, inputs)
+	var cleanupTools func() error
+	runContext, cancel := context.WithCancel(ctx)
+	runContext = context.WithValue(runContext, tool.RunCleanupKey{}, &cleanupTools)
+	err := func() (err error) {
+		defer func() {
+			cancel()
+			if cleanupTools != nil {
+				if cleanupErr := cleanupTools(); cleanupErr != nil {
+					err = errors.Join(err, fmt.Errorf("clean up tools: %w", cleanupErr))
+				}
+			}
+		}()
+		return a.run(runContext, inputs)
+	}()
 	result := Result{Messages: cloneMessages(a.history[start:])}
 	if a.onEnd != nil {
 		a.onEnd(EndEvent{Result: Result{Messages: cloneMessages(result.Messages)}, Err: err})
@@ -134,6 +147,15 @@ func (a *Agent) generate(ctx context.Context) (bool, error) {
 	var text strings.Builder
 	var calls []tool.Call
 	var toolResults <-chan []tool.Result
+	batchContext, cancelBatch := context.WithCancel(ctx)
+	defer func() {
+		cancelBatch()
+		if toolResults != nil {
+			// A panicking model adapter may have already submitted a batch.
+			// Join it before the enclosing task releases its resources.
+			<-toolResults
+		}
+	}()
 	request := ModelRequest{Messages: cloneMessages(a.history), Tools: a.tools.Definitions()}
 	output := ModelOutput{
 		EmitText: func(chunk string) { text.WriteString(chunk) },
@@ -145,7 +167,7 @@ func (a *Agent) generate(ctx context.Context) (bool, error) {
 				return errors.New("model already submitted the round's tool calls")
 			}
 			calls = cloneCalls(batch)
-			toolResults = a.tools.Start(ctx, calls)
+			toolResults = a.tools.Start(batchContext, calls)
 			return nil
 		},
 	}
@@ -153,7 +175,9 @@ func (a *Agent) generate(ctx context.Context) (bool, error) {
 	if toolResults != nil {
 		// Keep the request and its results together, including on model failure.
 		a.history = append(a.history, Message{Role: RoleAssistant, Text: text.String(), ToolCalls: calls})
-		for _, result := range <-toolResults {
+		results := <-toolResults
+		toolResults = nil
+		for _, result := range results {
 			a.history = append(a.history, Message{
 				Role:       RoleTool,
 				Text:       result.Output,
@@ -168,7 +192,7 @@ func (a *Agent) generate(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("generate model response: %w", err)
 	}
-	return toolResults != nil, nil
+	return len(calls) != 0, nil
 }
 
 func (a *Agent) nextInputs(hadTools bool) []string {

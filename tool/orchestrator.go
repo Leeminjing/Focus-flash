@@ -11,8 +11,9 @@ import (
 // Orchestrator owns a fixed tool registry and limits concurrency in each batch.
 // Its zero value has no registered tools.
 type Orchestrator struct {
-	registry    map[string]Registration
-	parallelism int
+	registry     map[string]Registration
+	parallelism  int
+	batchContext func(context.Context) context.Context
 }
 
 // NewOrchestrator registers tools. A parallelism of zero or one runs calls in order.
@@ -49,6 +50,9 @@ func (o *Orchestrator) Definitions() []Definition {
 // Start runs a batch asynchronously and returns one result per call in input order.
 // Validation and execution failures are returned in the affected call's result.
 func (o *Orchestrator) Start(ctx context.Context, calls []Call) <-chan []Result {
+	if o.batchContext != nil && len(calls) > 0 {
+		ctx = o.batchContext(ctx)
+	}
 	calls = slices.Clone(calls)
 	for i := range calls {
 		calls[i].Args = slices.Clone(calls[i].Args)

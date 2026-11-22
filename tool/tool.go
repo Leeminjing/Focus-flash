@@ -11,6 +11,11 @@ import (
 // Implementations should honor cancellation through ctx.
 type Tool func(ctx context.Context, args json.RawMessage) (string, error)
 
+// RunCleanupKey identifies the task's cleanup slot (*func() error) in the
+// context shared by all of its tool batches. The Agent owns the slot and
+// invokes its contents after the last batch has returned.
+type RunCleanupKey struct{}
+
 // Definition describes a registered tool to a model adapter.
 type Definition struct {
 	Name        string
