@@ -2,6 +2,8 @@
 
 Focus-flash 的 Go 核心包运行一个 Agent 会话。调用方可在执行期间追加引导消息和后续消息。Windows 宿主同时装配 `shell`、`write_stdin` 和 `edit`。业务流程记录在本地维护文档 `DecisionTree.md` 中。
 
+[【session core】](./docs/session-core.md)
+
 ## 项目配置
 
 在项目根目录创建 `config.yaml`。顶层接收 `model` 和可选的 `sandbox_mode`。`model` 的字段由模型构造器的入参类型定义。以下示例的构造器接收 `name`。
