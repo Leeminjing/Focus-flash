@@ -1,8 +1,13 @@
 # Focus-flash
 
-Focus-flash 的 Go 核心包运行一个 Agent 会话。调用方可在执行期间追加引导消息和后续消息。Windows 宿主同时装配 `shell`、`write_stdin` 和 `edit`。业务流程记录在本地维护文档 `DecisionTree.md` 中。
+Focus-flash 有两条主线。
 
-[【session core】](./docs/session-core.md)
+- **session-core** 提供单会话 Agent 核心循环。调用方可在执行期间追加引导消息和后续消息。Windows 宿主装配 `shell`、`write_stdin` 和 `edit`。 [核心循环说明](./docs/session-core.md)
+- **Patrol（实验）** 探索以工作区为单位的单入口对话。用户与 Patrol 的对话也由 session-core 执行，具体会话的选择、派生和调度由 Patrol 负责。
+
+Patrol 单向依赖 session-core，通过现有公开契约组合单会话能力。Patrol 的实现不得改动 session-core 的源码、公开契约或核心循环行为。
+
+已实现的业务流程记录在本地维护文档 `DecisionTree.md` 中。
 
 ## 项目配置
 
@@ -32,6 +37,14 @@ type ModelConfig struct {
 
 - 实现 `agent.Model.Generate`，从 `ModelRequest` 读取会话和工具描述，用 `EmitText` 交付文本片段，用 `SubmitTools` 在一轮内交付一组完整的工具调用。两个回调应在 `Generate` 所在的 goroutine 中调用，并在它返回前结束。
 - 用 `agent.New` 注入模型及可选的工具编排器。用 `Run` 执行任务、用 `Steer` 追加引导消息、用 `FollowUp` 追加后续消息。若配置了 `OnEnd`，`Run` 会等它处理完再返回。
+
+### 工作区 Patrol
+
+Windows 宿主用 `app.NewPatrol(projectDir, newModel)` 为工作区启动一个 Patrol。组合根从现有的 `model` 段分别构造对话、工作会话和 Recorder 的模型。
+
+每条用户输入调用一次 `runtime.Run(ctx, input, onProgress)`。可选的 `onProgress func(patrol.InstantMessage)` 在运行期间接收进度。调用在本轮工作 Run 全部结束并发布 `Observation` 后返回 `patrol.Round`。同一工作区的工作 Run 按派发顺序执行，期间到达的下一条用户输入等待本轮观察发布。
+
+工作会话、用户输入历史、归档和工作记忆存放在该 Patrol 实例的进程内存中，新建实例从空工作区会话开始。
 
 ## 验证
 
