@@ -3,7 +3,7 @@
 Focus-flash 有两条主线。
 
 - **session-core** 提供单会话 Agent 核心循环。调用方可在执行期间追加引导消息和后续消息。Windows 宿主装配 `shell`、`write_stdin` 和 `edit`。 [核心循环说明](./docs/session-core.md)
-- **Patrol（实验）** 探索以工作区为单位的单入口对话。用户与 Patrol 的对话也由 session-core 执行，具体会话的选择、派生和调度由 Patrol 负责。
+- **[Patrol（实验）](./docs/patrol-architecture.md)** 探索以工作区为单位的单入口对话。用户与 Patrol 的对话也由 session-core 执行，具体会话的选择、派生和调度由 Patrol 负责。
 
 Patrol 单向依赖 session-core，通过现有公开契约组合单会话能力。Patrol 的实现不得改动 session-core 的源码、公开契约或核心循环行为。
 
