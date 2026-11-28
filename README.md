@@ -44,8 +44,8 @@ Windows 宿主用 `app.NewPatrol(projectDir, newModel)` 为工作区打开一个
 
 每条用户输入调用一次 `workspace.Run(ctx, input, onProgress)`。可选的 `onProgress func(patrol.InstantMessage)` 在运行期间接收进度。同一工作区的工作 Run 按派发顺序执行。Round 提交归档，进程内 worker 生成并保存工作记忆，Workspace 随本轮结果返回 `Observation` 并接续下一条输入。
 
-- **AGFS** 提供进程内的按路径读写，管理工作区归档文件和索引，并将 `/queue/` 下的请求交给 QueueFS。 [AGFS 源码](./internal/agfs/storage.go)
-- **QueueFS** 是 AGFS 的队列子模块，在 SQLite 中保存工作记忆任务，支持入队、按序领取、确认以及重启后恢复在途任务。 [QueueFS 源码](./internal/agfs/queuefs/queuefs.go)
+- **AGFS** 提供进程内的按路径读写，管理工作区归档文件和索引，并将 `/queue/` 下的请求交给 QueueFS。 [AGFS 简介与接口图鉴](./docs/agfs.md)
+- **QueueFS** 是 AGFS 的队列子模块，在 SQLite 中保存工作记忆任务，支持入队、按序领取、确认以及重启后恢复在途任务。 [QueueFS 简介与接口图鉴](./docs/queuefs.md)
 
 归档原文保存在 `.focus-flash/sessions/<session_id>/<archive_id>.jsonl`，归档索引、工作记忆和队列状态保存在 `.focus-flash/patrol.sqlite3`。重启后会补完已登记的归档并恢复未结算任务。新实例从空的工作会话集合和用户输入历史开始。
 
