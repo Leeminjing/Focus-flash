@@ -5,6 +5,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 
 	"focusflash/agent"
+	"focusflash/internal/agfs"
 	"focusflash/patrol"
 	"focusflash/tool"
 
@@ -32,12 +34,25 @@ func New[ModelConfig any](projectDir string, newModel func(ModelConfig) (agent.M
 	return agent.New(model, agent.Config{Tools: project.tools})
 }
 
-// NewPatrol assembles one workspace Patrol. Its conversation, work and Recorder
-// models are constructed with the existing project model configuration.
-func NewPatrol[ModelConfig any](projectDir string, newModel func(ModelConfig) (agent.Model, error)) (*patrol.Patrol, error) {
+// NewPatrol opens a Workspace using the existing project model configuration.
+// The caller owns the Workspace and closes it when the host shuts down.
+func NewPatrol[ModelConfig any](projectDir string, newModel func(ModelConfig) (agent.Model, error)) (_ *patrol.Workspace, err error) {
 	project, err := prepareProject(projectDir, newModel)
 	if err != nil {
 		return nil, err
+	}
+	ctx := context.Background()
+	storage, err := agfs.Open(ctx, filepath.Join(projectDir, ".focus-flash", "patrol.sqlite3"))
+	if err != nil {
+		return nil, fmt.Errorf("open Patrol storage: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, storage.Close())
+		}
+	}()
+	if err := storage.RecoverQueue(ctx); err != nil {
+		return nil, fmt.Errorf("recover Patrol queue: %w", err)
 	}
 	model, err := project.newModel()
 	if err != nil {
@@ -47,11 +62,11 @@ func NewPatrol[ModelConfig any](projectDir string, newModel func(ModelConfig) (a
 	if err != nil {
 		return nil, fmt.Errorf("Patrol work sessions: %w", err)
 	}
-	recorderModel, err := project.newModel()
+	memoryModel, err := project.newModel()
 	if err != nil {
-		return nil, fmt.Errorf("Recorder: %w", err)
+		return nil, fmt.Errorf("Patrol working memory: %w", err)
 	}
-	return patrol.New(model, workModel, recorderModel, project.tools)
+	return patrol.New(model, workModel, memoryModel, project.tools, storage)
 }
 
 type projectSetup struct {

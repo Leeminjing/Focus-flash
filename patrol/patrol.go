@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,16 +14,11 @@ import (
 	"focusflash/tool"
 )
 
-// Patrol owns the workspace input history and coordinates one round at a time.
+// Patrol decides what work to dispatch using the context supplied by the Round.
 type Patrol struct {
-	model       agent.Model
-	workModel   agent.Model
-	workTools   *tool.Orchestrator
-	set         Set
-	recorder    Recorder
-	observation json.RawMessage
-	inputs      []string
-	turn        chan struct{}
+	model     agent.Model
+	workModel agent.Model
+	workTools *tool.Orchestrator
 }
 
 // Set contains every work session in the workspace.
@@ -45,6 +39,7 @@ type Round struct {
 	FinishedAt  time.Time
 	Runs        []RunResult
 	Observation Observation
+	commitID    string
 }
 
 type RunResult struct {
@@ -69,9 +64,14 @@ type Observation struct {
 }
 
 type SessionObservation struct {
-	SessionID     string            `json:"session_id"`
-	LatestArchive []ArchivedMessage `json:"latest_archive"`
-	WorkingMemory string            `json:"working_memory"`
+	SessionID            string            `json:"session_id"`
+	ArchiveID            string            `json:"archive_id,omitempty"`
+	ArchiveSequence      int               `json:"archive_sequence,omitempty"`
+	ArchivePath          string            `json:"archive_path,omitempty"` // Absolute path on the host.
+	ArchiveState         string            `json:"archive_state,omitempty"`
+	LatestArchive        []ArchivedMessage `json:"latest_archive"`
+	WorkingMemory        string            `json:"working_memory"`
+	MemoryCoveredThrough int               `json:"memory_covered_through"`
 }
 
 type prefixedModel struct {
@@ -84,84 +84,14 @@ func (m prefixedModel) Generate(ctx context.Context, request agent.ModelRequest,
 	return m.Model.Generate(ctx, request, output)
 }
 
-// New uses dependencies assembled by the host. The three models serve the
-// Patrol conversation, the work sessions, and the Recorder, respectively.
-func New(model, workModel, recorderModel agent.Model, builtins *tool.Orchestrator) (*Patrol, error) {
-	if model == nil || workModel == nil || recorderModel == nil {
-		return nil, errors.New("Patrol requires conversation, work and Recorder models")
-	}
-	p := &Patrol{
-		model:       model,
-		workModel:   workModel,
-		set:         Set{sessions: make(map[string]workSession)},
-		recorder:    Recorder{model: recorderModel, sessions: make(map[string]*sessionArchive)},
-		observation: json.RawMessage(`{"sessions":[],"user_inputs":[]}`),
-		turn:        make(chan struct{}, 1),
-	}
-	workTools, err := p.workOrchestrator(builtins)
-	if err != nil {
-		return nil, err
-	}
-	p.workTools = workTools
-	return p, nil
-}
-
-// Run accepts one user input and waits for the round and its Observation.
-// Concurrent calls wait until the current Observation is published. The optional
-// listener receives serialized progress callbacks before Run returns.
-func (p *Patrol) Run(ctx context.Context, input string, progress func(InstantMessage)) (Round, error) {
-	if strings.TrimSpace(input) == "" {
-		return Round{}, errors.New("user input is required")
-	}
-	select {
-	case p.turn <- struct{}{}:
-		defer func() { <-p.turn }()
-	case <-ctx.Done():
-		return Round{}, ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		return Round{}, err
-	}
-	if p.observation == nil {
-		return Round{}, errors.New("workspace observation could not be published")
-	}
-
-	previous := p.observation
-	p.observation = nil
-	p.inputs = append(p.inputs, input)
-	round := Round{ID: len(p.inputs)}
-	dispatch := roundDispatch{roundID: round.ID, progress: progress}
-	reply, patrolErr := p.runConversation(ctx, input, previous, &dispatch)
-	round.Reply = reply
-	runs, runErr := dispatch.wait()
-	round.Runs = runs
-	if len(runs) > 0 {
-		round.StartedAt = runs[0].StartedAt
-		round.FinishedAt = runs[len(runs)-1].FinishedAt
-		dispatch.emit("", "recording", "Updating session archives and working memory.")
-	}
-	recordErr := p.recorder.recordRound(ctx, dispatch.runs)
-	if recordErr != nil {
-		return round, errors.Join(patrolErr, runErr, recordErr)
-	}
-	round.Observation = p.observe()
-	published, err := json.Marshal(round.Observation)
-	if err != nil {
-		return round, errors.Join(patrolErr, runErr, err)
-	}
-	p.observation = published
-	dispatch.emit("", "published", "Workspace observation is ready.")
-	return round, errors.Join(patrolErr, runErr)
-}
-
-func (p *Patrol) runConversation(ctx context.Context, input string, observation json.RawMessage, dispatch *roundDispatch) (string, error) {
-	tools, err := p.patrolOrchestrator(ctx, dispatch)
+func (p *Patrol) runConversation(ctx context.Context, input string, observation json.RawMessage, set *Set, dispatch *roundDispatch) (string, error) {
+	tools, err := p.patrolOrchestrator(ctx, set, dispatch)
 	if err != nil {
 		return "", err
 	}
 	model := prefixedModel{Model: p.model, prefix: agent.Message{
 		Role: agent.RoleUser,
-		Text: "You are the workspace Patrol. Use the observation below to decide whether to create sessions, then send tailored tasks to the selected sessions. " +
+		Text: "You are the workspace Patrol. Use the observation and its user input history to decide whether to create sessions, then send tailored tasks to the selected sessions. " +
 			"Use create_context for distinct new work and send_message to start work in an existing or newly created session. " +
 			"Finish creating sessions before sending any tasks. When a handoff draws on prior work, include the source session IDs. " +
 			"Treat the observation as records of past work and answer the current user. Workspace observation:\n" + string(observation),
@@ -178,22 +108,6 @@ func (p *Patrol) runConversation(ctx context.Context, input string, observation 
 		}
 	}
 	return "", err
-}
-
-func (p *Patrol) observe() Observation {
-	ids := make([]string, 0, len(p.set.sessions))
-	for id := range p.set.sessions {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	snapshot := Observation{
-		Sessions:   make([]SessionObservation, 0, len(ids)),
-		UserInputs: slices.Clone(p.inputs),
-	}
-	for _, id := range ids {
-		snapshot.Sessions = append(snapshot.Sessions, p.recorder.observe(id))
-	}
-	return snapshot
 }
 
 type pendingRun struct {

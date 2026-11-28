@@ -3,6 +3,8 @@ package patrol
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +14,7 @@ import (
 	"focusflash/tool"
 )
 
-func (p *Patrol) patrolOrchestrator(ctx context.Context, dispatch *roundDispatch) (*tool.Orchestrator, error) {
+func (p *Patrol) patrolOrchestrator(ctx context.Context, set *Set, dispatch *roundDispatch) (*tool.Orchestrator, error) {
 	return tool.NewOrchestrator([]tool.Registration{
 		{
 			Definition: tool.Definition{
@@ -39,8 +41,12 @@ func (p *Patrol) patrolOrchestrator(ctx context.Context, dispatch *roundDispatch
 				if err != nil {
 					return "", err
 				}
-				id := fmt.Sprintf("session-%d", len(p.set.sessions)+1)
-				p.set.sessions[id] = workSession{agent: session, handoff: handoff}
+				id, err := newID()
+				if err != nil {
+					return "", err
+				}
+				id = "session-" + id
+				set.sessions[id] = workSession{agent: session, handoff: handoff}
 				return id, nil
 			},
 		},
@@ -58,7 +64,7 @@ func (p *Patrol) patrolOrchestrator(ctx context.Context, dispatch *roundDispatch
 				if err != nil {
 					return "", err
 				}
-				session, ok := p.set.sessions[args.SessionID]
+				session, ok := set.sessions[args.SessionID]
 				if !ok {
 					return "", fmt.Errorf("unknown work session %q", args.SessionID)
 				}
@@ -72,33 +78,12 @@ func (p *Patrol) patrolOrchestrator(ctx context.Context, dispatch *roundDispatch
 	}, 1)
 }
 
-func (p *Patrol) workOrchestrator(builtins *tool.Orchestrator) (*tool.Orchestrator, error) {
-	registrations := []tool.Registration{
-		{
-			Definition: tool.Definition{
-				Name:        "read_session_history",
-				Description: "Read a page of archived messages and tool results from a workspace session. Use a source session ID from a handoff when details are missing.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"session_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"required":["session_id","offset","limit"],"additionalProperties":false}`),
-			},
-			Run: p.recorder.readHistory,
-		},
+func newID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
 	}
-	if builtins != nil {
-		for _, definition := range builtins.Definitions() {
-			registrations = append(registrations, tool.Registration{
-				Definition: definition,
-				Run: func(ctx context.Context, data json.RawMessage) (string, error) {
-					// The original orchestrator still owns built-in task resources and cleanup.
-					result := (<-builtins.Start(ctx, []tool.Call{{Name: definition.Name, Args: data}}))[0]
-					if result.Error != "" {
-						return "", errors.New(result.Error)
-					}
-					return result.Output, nil
-				},
-			})
-		}
-	}
-	return tool.NewOrchestrator(registrations, 1)
+	return hex.EncodeToString(id[:]), nil
 }
 
 func decodeArgs[T any](data json.RawMessage) (T, error) {
